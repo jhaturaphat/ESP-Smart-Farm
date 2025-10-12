@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ตั้งค่าอุปกรณ์</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+
+        .container {
+            max-width: 500px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                margin: 10px;
+                padding: 15px;
+            }
+        }
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 0;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 34px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            -webkit-transition: .4s;
+            transition: .4s;
+            border-radius: 34px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 26px;
+            width: 26px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            -webkit-transition: .4s;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #2196F3;
+        }
+
+        input:checked + .slider:before {
+            -webkit-transform: translateX(26px);
+            -ms-transform: translateX(26px);
+            transform: translateX(26px);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>ตั้งค่าอุปกรณ์</h1>
+        <form id="configForm">
+            <div class="form-group">
+                <label for="ssid">SSID (ชื่อ Wi-Fi):</label>
+                <input type="text" id="ssid" name="ssid" required>
+            </div>
+
+            <div class="form-group">
+                <label for="password">รหัสผ่าน Wi-Fi:</label>
+                <input type="text" id="password" name="password">
+            </div>
+
+            <div class="form-group">
+                <label for="url">URL Server:</label>
+                <input type="text" id="url" name="url" placeholder="เช่น http://yourserver.com/api" required>
+            </div>
+            
+            <div class="form-group toggle-switch">
+                <label for="use_esp_now">ใช้ ESP-NOW:</label>
+                <label class="switch">
+                    <input type="checkbox" id="use_esp_now" name="use_esp_now" value="off">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="form-group" id="esp_now_group" style="display: none;">
+                <label for="esp_now">ESP-NOW Peer MAC:</label>
+                <input type="text" id="esp_now_mac" name="esp_now_mac">
+            </div>
+
+            <button type="submit" id="saveButton">บันทึก</button>
+        </form>
+
+        <p id="resultMessage" style="text-align: center; margin-top: 20px; font-weight: bold;"></p>
+    </div>
+
+    <script>
+        const useEspNowToggle = document.getElementById('use_esp_now');
+        const espNowGroup = document.getElementById('esp_now_group');
+        const espNowInput = document.getElementById('esp_now_mac');
+        
+        // 1. ตรวจสอบสถานะ Toggle เมื่อหน้าโหลด
+        if (useEspNowToggle.checked) {
+            espNowGroup.style.display = 'block';
+        }
+
+        // 2. จัดการการแสดงผลเมื่อมีการเปลี่ยนแปลง Toggle
+        useEspNowToggle.addEventListener('change', function() {
+            if (this.checked) {
+                espNowGroup.style.display = 'block';
+                espNowInput.setAttribute('required', 'required'); // กำหนดให้ต้องกรอกเมื่อเปิดใช้งาน
+            } else {
+                espNowGroup.style.display = 'none';
+                espNowInput.removeAttribute('required'); // ยกเลิกการบังคับกรอก
+            }
+        });
+
+
+        document.getElementById('configForm').addEventListener('submit', function(event) {
+            event.preventDefault();
+
+            const form = event.target;
+            const formData = new FormData(form);
+            const params = new URLSearchParams();
+
+            // รวบรวมข้อมูลฟอร์ม
+            for (const [key, value] of formData.entries()) {
+                // หากเป็น checkbox ที่ไม่ได้ถูกเลือก (use_esp_now) จะไม่มีค่าใน formData
+                // แต่เราต้องการส่งเฉพาะค่าที่เกี่ยวข้อง
+                if (key === 'use_esp_now' && value !== 'on') {
+                    // ไม่ต้องส่งค่านี้ถ้าไม่ได้ถูกติ๊ก (ซึ่งมันจะไม่ถูกส่งมาอยู่แล้ว แต่เป็นการป้องกันไว้)
+                    continue;
+                }
+                
+                // สำหรับ MAC address ที่ถูกเปิดใช้งาน
+                if (key === 'esp_now_mac' && !useEspNowToggle.checked) {
+                    // ไม่ส่ง MAC ถ้าสวิตช์ปิด
+                    continue;
+                }
+
+                params.append(key, value);
+            }
+
+            const serverBaseURL = document.getElementById('url').value || '/save_config';
+            const queryString = params.toString();
+            const finalURL = serverBaseURL + '?' + queryString;
+
+            console.log('URL:', finalURL);
+
+            document.getElementById('resultMessage').textContent = 'กำลังส่งข้อมูล...';
+
+            // ส่งข้อมูลไปยังเซิร์ฟเวอร์
+            fetch(finalURL, {
+                method: 'GET'
+            })
+            .then(response => {
+                if (response.ok) {
+                    document.getElementById('resultMessage').textContent = '✅ บันทึกข้อมูลสำเร็จ! URL ถูกส่งไปยังเซิร์ฟเวอร์';
+                } else {
+                    document.getElementById('resultMessage').textContent = `❌ ข้อผิดพลาด: ${response.status} ${response.statusText}`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('resultMessage').textContent = '❌ การเชื่อมต่อล้มเหลว';
+            });
+        });
+    </script>
+
+</body>
+</html>
