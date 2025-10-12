@@ -16,7 +16,7 @@
             max-width: 500px;
             margin: auto;
             background: #fff;
-            padding: 20px;
+            padding: 10px;
             border-radius: 8px;
             box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
         }
@@ -39,12 +39,14 @@
         }
 
         input[type="text"],
+        input[type="number"],
         input[type="password"] {
             width: 100%;
             padding: 10px;
             border: 1px solid #ccc;
             border-radius: 4px;
             box-sizing: border-box;
+            font-size: 16px;
         }
 
         button {
@@ -132,6 +134,10 @@
         <h1>ตั้งค่าอุปกรณ์</h1>
         <form id="configForm">
             <div class="form-group">
+                <label for="ssid">ID :</label>
+                <input type="number" id="id" name="id" placeholder="1-10" min="1" max="10" required>
+            </div>
+            <div class="form-group">
                 <label for="ssid">SSID (ชื่อ Wi-Fi):</label>
                 <input type="text" id="ssid" name="ssid" required>
             </div>
@@ -155,15 +161,17 @@
             </div>
 
             <div class="form-group" id="esp_now_group" style="display: none;">
-                <label for="esp_now">ESP-NOW Peer MAC:</label>
-                <input type="text" id="esp_now_mac" name="esp_now_mac">
+                <label for="esp_now">ESP-NOW Peer MAC Gateway:</label>
+                <input type="text" id="esp_now_mac" name="esp_now_mac" title="กรุณากรอกเฉพาะตัวเลข (0-9) และตัวอักษร A-F เท่านั้น">
             </div>
 
             <button type="submit" id="saveButton">บันทึก</button>
         </form>
 
         <p id="resultMessage" style="text-align: center; margin-top: 20px; font-weight: bold;"></p>
+        <center>©Copyright By จตุรภัทร ศิริบูรณ์</center>
     </div>
+    
 
     <script>
         const useEspNowToggle = document.getElementById('use_esp_now');
@@ -198,10 +206,10 @@
             for (const [key, value] of formData.entries()) {
                 // หากเป็น checkbox ที่ไม่ได้ถูกเลือก (use_esp_now) จะไม่มีค่าใน formData
                 // แต่เราต้องการส่งเฉพาะค่าที่เกี่ยวข้อง
-                if (key === 'use_esp_now' && value !== 'on') {
+               if (key === 'use_esp_now' && value !== 'on') {
                     // ไม่ต้องส่งค่านี้ถ้าไม่ได้ถูกติ๊ก (ซึ่งมันจะไม่ถูกส่งมาอยู่แล้ว แต่เป็นการป้องกันไว้)
                     continue;
-                }
+               }
                 
                 // สำหรับ MAC address ที่ถูกเปิดใช้งาน
                 if (key === 'esp_now_mac' && !useEspNowToggle.checked) {
@@ -212,7 +220,7 @@
                 params.append(key, value);
             }
 
-            const serverBaseURL = document.getElementById('url').value || '/save_config';
+            const serverBaseURL = '/save_config';
             const queryString = params.toString();
             const finalURL = serverBaseURL + '?' + queryString;
 

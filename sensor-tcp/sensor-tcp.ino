@@ -1,4 +1,6 @@
 
+// Flash Size: "1MB (FS:256KB OTA:374KB)"
+
 #include <ESP8266WiFi.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
@@ -9,8 +11,8 @@
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
 
 
-#define SERVER_PIN 4
-#define SENSOR_PIN 5
+#define SERVER_PIN 3
+#define SENSOR_PIN 1
 #define LED_PIN 2
 
 unsigned long previousMillis = 0;
@@ -27,6 +29,9 @@ String chipID();
 void save_Config(AsyncWebServerRequest *request);
 bool loadConfig();
 
+// ประกาศ server แบบ global
+AsyncWebServer server(80);
+bool isServerMode = false;
 
 struct Config {
   String id;
@@ -71,24 +76,30 @@ void setup() {
 }
 
 void serverMode(){
-  AsyncWebServer server(80);
+  isServerMode = true;
   // เริ่ม โหมด Access Point และ Webserver
-  WiFi.softAP(chipID(), "");
+  String apName = "esp_" + chipID();
+  WiFi.softAP(apName.c_str(), "");
   delay(100); //หน่วงเวลา 100 ms เพื่อให้ AP เริ่มทำงาน
 
   server.on("/", HTTP_GET,[](AsyncWebServerRequest *request){
-    request->send(LittleFS, "text/html","/index.html");
-  });
-
-  server.on("/get_ssid", HTTP_GET, [](AsyncWebServerRequest *request){
-    
+    if(LittleFS.exists("/index.html")){
+      request->send(LittleFS, "/index.html", "text/html");
+    } else {
+      int duration = millis();
+      request->send(200, "text/html", "<h1>ESP8266 Config</h1><p>index.html not found in LittleFS "+(String)duration+"</p>");
+    }
   });
 
   server.on("/save_config", HTTP_GET,[](AsyncWebServerRequest *request){
     save_Config(request);
   });
 
-  // Start server
+  // จัดการ request ที่ไม่ตรงกับ route ใดๆ
+  server.onNotFound([](AsyncWebServerRequest *request){    
+    request->send(404, "text/plain", "Not Found "+request->url());
+  });
+  // เริ่ม server
   server.begin();
 
 }
@@ -122,8 +133,7 @@ bool loadConfig() {
   cfg.id          = doc["id"].as<String>();
   cfg.ssid        = doc["ssid"].as<String>();
   cfg.password    = doc["password"].as<String>();
-  cfg.url         = doc["url"].as<String>();
-  cfg.mac         = doc["mac"].as<String>();
+  cfg.url         = doc["url"].as<String>();  
   cfg.esp_now_mac = doc["esp_now_mac"].as<String>();
 
   return true;
@@ -146,8 +156,10 @@ void connectAP(){
 }
 
 String chipID(){
-    String ChipID = "esp_unknown";
-    return String(ESP.getChipId());
+    uint32_t chipId = ESP.getChipId();
+    String chipIDStr = String(chipId, HEX);
+    chipIDStr.toUpperCase();
+    return chipIDStr;
 }
 
 void save_Config(AsyncWebServerRequest *request){
@@ -192,6 +204,11 @@ void save_Config(AsyncWebServerRequest *request){
 
 
 void loop() {
+
+  if(isServerMode){
+    delay(10); // ให้ ESP8266 ทำงานพื้นหลัง
+    return;
+  }
   // ใน loop() คุณสามารถใส่โค้ดการทำงานหลักของคุณได้เลย 
   // โดยไม่ต้องมีโค้ดตรวจสอบสถานะการเชื่อมต่อ Wi-Fi ซ้ำๆ 
   // เพราะ Event Handlers จะจัดการการเชื่อมต่อ/ตัดการเชื่อมต่อในพื้นหลังแล้ว
