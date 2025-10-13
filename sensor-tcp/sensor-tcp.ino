@@ -10,10 +10,19 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
 
+// ===================================
+// Pin Definitions for ESP-01 Board
+// ===================================
+//#define SERVER_PIN 3
+//#define SENSOR_PIN 1
+//#define LED_PIN 2
 
-#define SERVER_PIN 3
-#define SENSOR_PIN 1
-#define LED_PIN 2
+// ===================================
+// Pin Definitions for ESP8266-12E / NodeMCU
+// ===================================
+#define SERVER_PIN   13  // GPIO13 (D7 on NodeMCU).
+#define SENSOR_PIN   14  // GPIO14 (D5 on NodeMCU).
+#define LED_PIN      2   // GPIO2 (D4 on NodeMCU - Often used for internal LED).
 
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
