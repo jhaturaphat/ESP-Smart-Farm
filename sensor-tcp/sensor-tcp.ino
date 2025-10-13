@@ -278,7 +278,7 @@ void report(){
       
       statusMsg = "🔧 **ESP8266 Status Report**\\n";
       statusMsg += "**ID:** " + cfg.id +"\\n";
-      statusMsg += "**Sensor:**" + String(digitalRead(SENSOR_PIN) ? "🟢":"🔴")+"\\n";
+      statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
       statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "✅ Connected" : "❌ Disconnected") + "\\n";
       statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
       statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
@@ -365,6 +365,7 @@ void loop() {
     return;
   }
 
+  
   // ส่งข้อความ Discord ที่รอคิวอยู่
   if(pendingDiscordMessage){
     report();
@@ -376,6 +377,9 @@ void loop() {
   // ตัวอย่าง: โค้ดสำหรับทำอะไรสักอย่างทุก 5 วินาที
   static unsigned long lastTime = 0;
   if (millis() - lastTime > 5000) {
+    if(!digitalRead(SENSOR_PIN)){
+      pendingDiscordMessage = true;
+    }
     if (WiFi.isConnected()) {
       // ทำงานที่ต้องใช้ Wi-Fi
       // Serial.println("Service running... WiFi is connected.");
