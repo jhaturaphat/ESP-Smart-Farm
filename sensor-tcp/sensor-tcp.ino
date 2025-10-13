@@ -41,6 +41,7 @@ String chipID();
 void save_Config(AsyncWebServerRequest *request);
 bool loadConfig();
 void sendMessageToDiscord(String msg);
+void report();
 
 // ประกาศ server แบบ global
 AsyncWebServer server(80);
@@ -82,6 +83,7 @@ void setup() {
     wifiEventHandler[2] = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& evt) {
       // handleWiFiEvent("Got IP", "IP: " + evt.ip.toString());
       digitalWrite(LED_PIN, HIGH);
+      pendingDiscordMessage = true;
     });
     WiFi.setAutoReconnect(true); 
     connectAP();
@@ -258,15 +260,7 @@ void connectAP(){
 });
 
     server.on("/test", HTTP_GET,[](AsyncWebServerRequest *request){
-      pendingDiscordMessage = true;  
-      statusMsg = "🔧 **ESP8266 Status Report**\\n";
-      statusMsg += "**SENSOR ID:** " + cfg.id;
-      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "✅ Connected" : "❌ Disconnected") + "\\n";
-      statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
-      statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
-      statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
-      statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
-      
+      pendingDiscordMessage = true;
       request->send(200, "text/plain", "Message queued");    
     });
 
@@ -278,6 +272,18 @@ void connectAP(){
   server.begin();
   
   }
+}
+
+void report(){
+      
+      statusMsg = "🔧 **ESP8266 Status Report**\\n";
+      statusMsg += "**ID:** " + cfg.id +"\\n";
+      statusMsg += "**Sensor:**" + String(digitalRead(SENSOR_PIN) ? "🟢":"🔴")+"\\n";
+      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "✅ Connected" : "❌ Disconnected") + "\\n";
+      statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
+      statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
+      statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
+      statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
 }
 
 String chipID(){
@@ -361,6 +367,7 @@ void loop() {
 
   // ส่งข้อความ Discord ที่รอคิวอยู่
   if(pendingDiscordMessage){
+    report();
     sendMessageToDiscord(statusMsg);
     pendingDiscordMessage = false;
     statusMsg = "";
