@@ -13,19 +13,20 @@
 // ===================================
 // Pin Definitions for ESP-01 Board
 // ===================================
-//#define SERVER_PIN 3
-//#define SENSOR_PIN 1
-//#define LED_PIN 2
+#define SERVER_PIN 3  //GPIO3 RX
+#define SENSOR_PIN 1  //GPIO1 TXD
+#define LED_PIN 2     // GPIO2
 
 // ===================================
 // Pin Definitions for ESP8266-12E / NodeMCU
 // ===================================
-#define SERVER_PIN   13  // GPIO13 (D7 on NodeMCU).
-#define SENSOR_PIN   14  // GPIO14 (D5 on NodeMCU).
-#define LED_PIN      2   // GPIO2 (D4 on NodeMCU - Often used for internal LED).
+// #define SERVER_PIN   13  // GPIO13 (D7 on NodeMCU).
+// #define SENSOR_PIN   14  // GPIO14 (D5 on NodeMCU).
+// #define LED_PIN      2   // GPIO2 (D4 on NodeMCU - Often used for internal LED).
 
 bool pendingDiscordMessage = false;
 String statusMsg = "";
+bool sensorAlarm = false;
 
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
@@ -41,6 +42,7 @@ String chipID();
 void save_Config(AsyncWebServerRequest *request);
 bool loadConfig();
 void sendMessageToDiscord(String msg);
+void sendDataToAPI(String payload);
 void report();
 
 // ประกาศ server แบบ global
@@ -279,7 +281,7 @@ void report(){
       statusMsg = "🔧 **ESP8266 Status Report**\\n";
       statusMsg += "**ID:** " + cfg.id +"\\n";
       statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
-      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "✅ Connected" : "❌ Disconnected") + "\\n";
+      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "Connected" : "Disconnected") + "\\n";
       statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
       statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
       statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
@@ -357,6 +359,59 @@ void sendMessageToDiscord(String msg){
 
 }
 
+void sendDataToAPI(String& payload) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected.");
+    return;
+  }
+
+  HTTPClient http;
+  String url = cfg.url;
+  // ตรวจสอบว่า URL เริ่มต้นด้วย "https" หรือไม่
+  if (url.startsWith("https")) {
+    // 1. สร้าง WiFiClientSecure และตั้งค่า CA
+    WiFiClientSecure *secureClient = new WiFiClientSecure;
+    
+    // ตั้งค่า Root CA (แนะนำให้ทำเพื่อความปลอดภัย)
+    // secureClient->setCACert(root_ca); 
+    
+    // หรือถ้าไม่ตั้งค่า CA (Insecure - ไม่แนะนำ)
+    secureClient->setInsecure(); 
+
+    // 2. ใช้ http.begin() กับ Secure Client
+    http.begin(*secureClient, url); 
+    
+    // ต้องตรวจสอบและลบอ็อบเจกต์หลังจากใช้งาน
+    delete secureClient; 
+
+  } else {    
+    // 1. สร้าง WiFiClient ธรรมดาสำหรับ HTTP
+    WiFiClient client;    
+    // 2. ใช้ http.begin() กับ Client ธรรมดา
+    http.begin(client, url);
+  }
+  
+  // --- ส่วนของการส่ง Request (เหมือนกันสำหรับทั้ง HTTP/HTTPS) ---
+  
+  http.addHeader("Content-Type", "application/json"); 
+  
+  int httpResponseCode = http.POST(payload);
+
+  if (httpResponseCode > 0) {
+    // Serial.print("HTTP Response code: ");
+    // Serial.println(httpResponseCode);
+    String response = http.getString();
+    // Serial.println(response);
+  } else {
+    // Serial.print("Error on sending POST. Code: ");
+    // Serial.println(httpResponseCode);
+    // Serial.println(http.errorToString(httpResponseCode));
+  }
+  http.end();
+}
+
+
+
 
 void loop() {
 
@@ -377,8 +432,14 @@ void loop() {
   // ตัวอย่าง: โค้ดสำหรับทำอะไรสักอย่างทุก 5 วินาที
   static unsigned long lastTime = 0;
   if (millis() - lastTime > 5000) {
-    if(!digitalRead(SENSOR_PIN)){
+    //ส่งแจ้งเตือน 1 ครั้งหลักจาก เซ็นเซอร์กลับมาเป็นปกตื
+    if(!pendingDiscordMessage && sensorAlarm){
+      sensorAlarm = false;
       pendingDiscordMessage = true;
+    }
+    if(!digitalRead(SENSOR_PIN)){
+      pendingDiscordMessage = true; 
+      sensorAlarm = true;     
     }
     if (WiFi.isConnected()) {
       // ทำงานที่ต้องใช้ Wi-Fi
