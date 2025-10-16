@@ -9,7 +9,7 @@
 #include <ArduinoJson.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
-
+#include <TaskScheduler.h>
 // ===================================
 // Pin Definitions for ESP-01 Board
 // ===================================
@@ -31,6 +31,7 @@ bool pendingSendDataToApi = false;
 
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
+
 // ตัวแปรสำหรับเก็บ Event Handler
 WiFiEventHandler wifiEventHandler[3];
 
@@ -45,7 +46,11 @@ bool loadConfig();
 void sendMessageToDiscord(String msg);
 void sendDataToAPI(String payload);
 void report();
-
+void task1_callback();
+void task2_callback();
+Task task1(1000, TASK_FOREVER, &task1_callback); // Run every 1000ms
+Task task2(500, TASK_FOREVER, &task2_callback); // Run every 500ms
+Scheduler runner;
 // ประกาศ server แบบ global
 AsyncWebServer server(80);
 bool isServerMode = false;
@@ -91,9 +96,11 @@ void setup() {
     });
     WiFi.setAutoReconnect(true); 
     connectAP();
-  }else{
-    
   }
+  runner.addTask(task1);
+  runner.addTask(task2);
+  task1.enable();
+  task2.enable();
 
 }
 
@@ -344,9 +351,13 @@ void save_Config(AsyncWebServerRequest *request){
 }
 
 void sendMessageToDiscord(String msg){
-  if(WiFi.status() != WL_CONNECTED) return; //Wifi not connected - cannor send message
+  if(WiFi.status() != WL_CONNECTED){
+    digitalWrite(LED_PIN, LOW);
+    return; //Wifi not connected - cannor send message
+  }else{
+    digitalWrite(LED_PIN, HIGH);
+  }
 
-  // WiFiClientSecure *client = nullptr;
   WiFiClientSecure *client = new WiFiClientSecure();
   client->setInsecure(); // ไม่ตรวจสอบ SSL certificate 
   HTTPClient http;
@@ -365,7 +376,7 @@ void sendMessageToDiscord(String msg){
 }
 
 void sendDataToAPI(String payload) {
-  Serial.println("sendDataToAPI");
+  // Serial.println("sendDataToAPI");
   if (WiFi.status() != WL_CONNECTED) {
     return;
   }
@@ -391,13 +402,31 @@ void sendDataToAPI(String payload) {
   // ลบ client หลังจาก http.end()
   if (secureClient) delete secureClient;
   if (client) delete client;
+
+}
+
+// สำหรับ Discord notify
+void task1_callback(){
+  if(!digitalRead(SENSOR_PIN)){
+      pendingDiscordMessage = true;  
+      // เปิดใช้งาน Task2  
+      // if(!task2.isEnabled()) {
+      //   task2.enable();
+      // }
+  }  
+}
+// สำหรับ ส่งข้อมูลไปยัง Siren
+void task2_callback(){
+  if(!digitalRead(SENSOR_PIN)){      
+      sensorAlarm = true;   
+      pendingSendDataToApi = true; 
+  }  
 }
 
 
 
-
-
 void loop() {
+  runner.execute(); // Run the scheduler
   static unsigned long lastTime = 0;
 
   if(isServerMode){
@@ -413,27 +442,21 @@ void loop() {
     pendingDiscordMessage = false;
     statusMsg = "";
   }
-  // ส่งอีกครั้งเมื่อ เซ็นเซอร์ กลับมาเป็นปกติ เพื่อปิด 🚨 
+  // ส่งไปยัง Siren 🚨 อีกครั้งเมื่อเซ็นเซอร์กลับมาเป็นปกติ เพื่อปิด  
   if(pendingSendDataToApi && !pendingDiscordMessage){ 
       String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";  
       sendDataToAPI(payload);
       pendingSendDataToApi = false;
   }
 
-  // ตัวอย่าง: โค้ดสำหรับทำอะไรสักอย่างทุก 7 วินาที  
-  if (millis() - lastTime > 7000) {
+  // ตัวอย่าง: โค้ดสำหรับทำอะไรสักอย่างทุก 7 มิลลิวินาที  
+  if (millis() - lastTime > 700) {
     //ส่งแจ้งเตือน 1 ครั้งหลักจาก เซ็นเซอร์กลับมาเป็นปกตื
     if(!pendingDiscordMessage && sensorAlarm){
       sensorAlarm = false;
       pendingDiscordMessage = true;
-      pendingSendDataToApi = true; 
     }
-    if(!digitalRead(SENSOR_PIN)){
-      pendingDiscordMessage = true; 
-      sensorAlarm = true;   
-      pendingSendDataToApi = true;  
-    }   
+     
     lastTime = millis();
   }
-
 }

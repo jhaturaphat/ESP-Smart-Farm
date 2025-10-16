@@ -1,4 +1,3 @@
-
 // Flash Size: "1MB (FS:256KB OTA:374KB)"
 
 #include <ESP8266WiFi.h>
@@ -8,45 +7,36 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESP8266HTTPClient.h>
-#include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
-
-// ===================================
-// Pin Definitions for ESP-01 Board
-// ===================================
-// #define SERVER_PIN 3  //GPIO3 RX
-// #define SENSOR_PIN 1  //GPIO1 TXD
-// #define LED_PIN 2     // GPIO2
+#include <WiFiClient.h>
+#include <Ticker.h>  // เพิ่ม Ticker สำหรับ async task
 
 // ===================================
 // Pin Definitions for ESP8266-12E / NodeMCU
 // ===================================
 #define SERVER_PIN   13  // GPIO13 (D7 on NodeMCU).
 #define SENSOR_PIN   14  // GPIO14 (D5 on NodeMCU).
-#define LED_PIN      2   // GPIO2 (D4 on NodeMCU - Often used for internal LED).
+#define LED_PIN      2   // GPIO2 (D4 on NodeMCU).
 
+// ===================================
+// ตัวแปร Global
+// ===================================
 bool pendingDiscordMessage = false;
 String statusMsg = "";
 bool sensorAlarm = false;
 bool pendingSendDataToApi = false;
 
-unsigned long previousMillis = 0;
-unsigned long interval = 30000;
-// ตัวแปรสำหรับเก็บ Event Handler
+// เก็บสถานะเซ็นเซอร์ครั้งก่อน
+bool lastSensorState = HIGH;
+
+// ตัวแปรสำหรับ debounce
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 100; // 50ms
+
+// ตัวแปรสำหรับจำกัดความถี่ในการส่งข้อมูล
+unsigned long lastSendTime = 0;
+const unsigned long MIN_SEND_INTERVAL = 2000; // ส่งห่างกันอย่างน้อย 2 วินาที
+
 WiFiEventHandler wifiEventHandler[3];
-
-// ฟังก์ชันนี้จะถูกเรียกเมื่อเชื่อมต่อกับ Wi-Fi สำเร็จและได้รับ IP Address แล้ว
-void onWiFiEvent(WiFiEvent_t event);
-
-void serverMode();
-void connectAP();
-String chipID();
-void save_Config(AsyncWebServerRequest *request);
-bool loadConfig();
-void sendMessageToDiscord(String msg);
-void sendDataToAPI(String payload);
-void report();
-
-// ประกาศ server แบบ global
 AsyncWebServer server(80);
 bool isServerMode = false;
 
@@ -59,8 +49,22 @@ struct Config {
   String esp_now_mac;
 } cfg;
 
+// ===================================
+// ฟังก์ชันประกาศล่วงหน้า
+// ===================================
+void serverMode();
+void connectAP();
+String chipID();
+void save_Config(AsyncWebServerRequest *request);
+bool loadConfig();
+void sendMessageToDiscord(String msg);
+void sendDataToAPI(String payload);
+void report();
+void checkSensor();
+void processAsyncTasks();
+
 void setup() {
-  // put your setup code here, to run once:
+  Serial.begin(115200);
   pinMode(SERVER_PIN, INPUT_PULLUP);
   pinMode(SENSOR_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
@@ -69,40 +73,36 @@ void setup() {
     return;
   }
 
+  // อ่านสถานะเริ่มต้นของเซ็นเซอร์
+  // lastSensorState = digitalRead(SENSOR_PIN);
+
   int pinval = digitalRead(SERVER_PIN);
   if(!pinval){
     serverMode();
   }else if(loadConfig()){    
-    // ลงทะเบียน Event Handlers ทั้งหมดในที่เดียว
     wifiEventHandler[0] = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& evt) {
-      // handleWiFiEvent("Connected", "SSID: " + evt.ssid);      
+      // Connected
     });
     
     wifiEventHandler[1] = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& evt) {
-      // handleWiFiEvent("Disconnected", "Reason: " + String(evt.reason));
       digitalWrite(LED_PIN, LOW);
     });
     
     wifiEventHandler[2] = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& evt) {
-      // handleWiFiEvent("Got IP", "IP: " + evt.ip.toString());
       digitalWrite(LED_PIN, HIGH);
       pendingDiscordMessage = true;
       pendingSendDataToApi = true;
     });
     WiFi.setAutoReconnect(true); 
     connectAP();
-  }else{
-    
   }
-
 }
 
 void serverMode(){
   isServerMode = true;
-  // เริ่ม โหมด Access Point และ Webserver
   String apName = "esp_" + chipID();
   WiFi.softAP(apName.c_str(), "");
-  delay(100); //หน่วงเวลา 100 ms เพื่อให้ AP เริ่มทำงาน
+  delay(100);
 
   server.on("/", HTTP_GET,[](AsyncWebServerRequest *request){
     if(LittleFS.exists("/index.html")){
@@ -117,41 +117,27 @@ void serverMode(){
     save_Config(request);
   });
 
-  // จัดการ request ที่ไม่ตรงกับ route ใดๆ
   server.onNotFound([](AsyncWebServerRequest *request){    
     request->send(404, "text/plain", "Not Found "+request->url());
   });
-  // เริ่ม server
+  
   server.begin();
-
 }
 
 bool loadConfig() {
-  
-  // 1. เปิดไฟล์สำหรับอ่าน
   File file = LittleFS.open("/config.json", "r");
   if (!file) {
-    // คืนค่าเป็น false เพื่อบอกว่าโหลดไม่สำเร็จ
     return false;
   }
   
-  // 2. แยกวิเคราะห์ JSON
   StaticJsonDocument<256> doc;
-  
-  // Deserialize the JSON document
   DeserializationError error = deserializeJson(doc, file);
-  
-  // ปิดไฟล์ทันทีหลังจากอ่าน
   file.close(); 
   
-  // 3. ตรวจสอบข้อผิดพลาดในการแยกวิเคราะห์
   if (error) {  
-    // คืนค่าเป็น false เพื่อบอกว่าโหลดไม่สำเร็จ  
     return false;
   }
 
-  // ดึงค่าจาก JSON ลงในสมาชิกของ Struct (Object) ที่ถูกส่งเข้ามา (cfg)
-  
   cfg.id          = doc["id"].as<String>();
   cfg.ssid        = doc["ssid"].as<String>();
   cfg.password    = doc["password"].as<String>();
@@ -162,13 +148,15 @@ bool loadConfig() {
   return true;
 }
 
-
 void connectAP(){
   if(cfg.ssid != ""){
     WiFi.mode(WIFI_STA);
     WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str());
     WiFi.setAutoReconnect(true);
-    while (WiFi.status() != WL_CONNECTED) {
+    
+    // เปลี่ยนจาก while loop เป็นการรอแบบ non-blocking
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
       digitalWrite(LED_PIN, HIGH);
       delay(200);
       digitalWrite(LED_PIN, LOW);
@@ -268,33 +256,30 @@ void connectAP(){
       request->send(200, "text/plain", "Message queued");    
     });
 
-     // จัดการ request ที่ไม่ตรงกับ route ใดๆ
-  server.onNotFound([](AsyncWebServerRequest *request){    
-    request->send(404, "text/plain", "Not Found "+request->url());
-  });
-  // เริ่ม server
-  server.begin();
-  
+    server.onNotFound([](AsyncWebServerRequest *request){    
+      request->send(404, "text/plain", "Not Found "+request->url());
+    });
+    
+    server.begin();
   }
 }
 
 void report(){
-      
-      statusMsg = "🔧 **ESP8266 Status Report**\\n";
-      statusMsg += "**ID:** " + cfg.id +"\\n";
-      statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
-      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "Connected" : "Disconnected") + "\\n";
-      statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
-      statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
-      statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
-      statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
+  statusMsg = "🔧 **ESP8266 Status Report**\\n";
+  statusMsg += "**ID:** " + cfg.id +"\\n";
+  statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
+  statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "Connected" : "Disconnected") + "\\n";
+  statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
+  statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
+  statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
+  statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
 }
 
 String chipID(){
-    uint32_t chipId = ESP.getChipId();
-    String chipIDStr = String(chipId, HEX);
-    chipIDStr.toUpperCase();
-    return chipIDStr;
+  uint32_t chipId = ESP.getChipId();
+  String chipIDStr = String(chipId, HEX);
+  chipIDStr.toUpperCase();
+  return chipIDStr;
 }
 
 void save_Config(AsyncWebServerRequest *request){
@@ -303,29 +288,25 @@ void save_Config(AsyncWebServerRequest *request){
   if (!request->hasParam("password")) return request->send(400, "application/json", "{\"error\":\"No parameters PASSWORD\"}");
   if (!request->hasParam("url")) return request->send(400, "application/json", "{\"error\":\"No parameters URL\"}");
   
-  
-  // รับค่าจาก request มาเก็บลงตัวแปร
   String id         = request->getParam("id")->value();
-  String ssid         = request->getParam("ssid")->value();
-  String password     = request->getParam("password")->value();
-  String url          = request->getParam("url")->value();
-  String discord      = "";
-  String esp_now_mac  = "";
+  String ssid       = request->getParam("ssid")->value();
+  String password   = request->getParam("password")->value();
+  String url        = request->getParam("url")->value();
+  String discord    = "";
+  String esp_now_mac = "";
   
   if (request->hasParam("discord")){
     discord = request->getParam("discord")->value();
   }
   if (request->hasParam("esp_now_mac")){
-    esp_now_mac  = request->getParam("esp_now_mac")->value();
+    esp_now_mac = request->getParam("esp_now_mac")->value();
   }
-  
 
   File file = LittleFS.open("/config.json","w");
   if(!file){
     return request->send(400, "application/json", "{\"error\":\"Failed to create new config file\"}");
   }
 
-  // ใช้ ArduinoJson
   StaticJsonDocument<256> doc;
   doc["id"]           = id;
   doc["ssid"]         = ssid;
@@ -333,35 +314,31 @@ void save_Config(AsyncWebServerRequest *request){
   doc["url"]          = url;  
   doc["discord"]      = discord;
   doc["esp_now_mac"]  = esp_now_mac;
-  // เขียน JSON ลงไฟล์
+  
   if(serializeJson(doc, file) == 0){
     file.close();
     return request->send(500, "application/json", "{\"error\":\"Failed to write to file\"}");
   }
   file.close();
   request->send(200, "application/json", "{\"success\":\"Configuration saved successfully\"}");
-
 }
 
 void sendMessageToDiscord(String msg){
-  if(WiFi.status() != WL_CONNECTED) return; //Wifi not connected - cannor send message
+  Serial.println("sendMessageToDiscord");
+  if(WiFi.status() != WL_CONNECTED) return;
 
-  // WiFiClientSecure *client = nullptr;
   WiFiClientSecure *client = new WiFiClientSecure();
-  client->setInsecure(); // ไม่ตรวจสอบ SSL certificate 
+  client->setInsecure();
   HTTPClient http;
 
   if(http.begin(*client, cfg.discord)){
     http.addHeader("Content-Type", "application/json");
     http.addHeader("User-Agent", "ESP-Discord-Bot");
     String jsonPayload = "{\"content\": \"" + msg + "\"}";
-    // ส่ง POST request
-    int httpResponseCode = http.POST(jsonPayload);    
+    http.POST(jsonPayload);
   }
   http.end();
-
   delete client;  // ย้ายมาหลัง http.end()
-
 }
 
 void sendDataToAPI(String payload) {
@@ -393,47 +370,78 @@ void sendDataToAPI(String payload) {
   if (client) delete client;
 }
 
+// ฟังก์ชันตรวจสอบเซ็นเซอร์แบบ debounce
+void checkSensor() {
+  bool currentState = digitalRead(SENSOR_PIN);
+  //Serial.println("Check Sensor: currentState=" + String(currentState) + " lastSensorState=" + String(lastSensorState));
+  
+  if (currentState != lastSensorState) {
+    lastDebounceTime = millis();
+    Serial.println("State Change Detected - Reset debounce timer");
+  }
+  unsigned long currentMillis = millis();
+  Serial.println("Time elapsed since state change: " + String(currentMillis - lastDebounceTime));
 
+  
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // (currentState != lastSensorState) {
+      lastSensorState = currentState;
+      Serial.println("State Confirmed Change");
+      
+      if (currentState == LOW) {
+        sensorAlarm = true;
+        pendingDiscordMessage = true;
+        pendingSendDataToApi = true;
+      } else {
+        if (sensorAlarm) {
+          sensorAlarm = false;
+          pendingDiscordMessage = true;
+          pendingSendDataToApi = true;
+        }
+      }
+    //}
+  }
+}
 
-
+// ฟังก์ชันจัดการ task แบบทำทีละอย่าง
+void processAsyncTasks() {
+  // ส่งข้อความ Discord ก่อน (ถ้ามี)
+  if(pendingDiscordMessage) {
+    report();
+    sendMessageToDiscord(statusMsg);
+    statusMsg = "";
+    pendingDiscordMessage = false;
+    return; // ออกจากฟังก์ชันเพื่อไม่ให้ทำงานซ้อนกัน
+  }
+  
+  // ส่งข้อมูลไป API ทีหลัง (ถ้ามี)
+  if(pendingSendDataToApi) {
+    if(WiFi.isConnected()) {
+      String payload = "{\"id\":\""+cfg.id+"\",\"alarm\":"+String(lastSensorState)+"}";
+      sendDataToAPI(payload);
+    }
+    pendingSendDataToApi = false;
+    return; // ออกจากฟังก์ชันเพื่อไม่ให้ทำงานซ้อนกัน
+  }
+}
 
 void loop() {
-  static unsigned long lastTime = 0;
-
   if(isServerMode){
-    delay(10); // ให้ ESP8266 ทำงานพื้นหลัง
+    yield(); // ให้ ESP8266 ทำงานพื้นหลัง
     return;
   }
 
+  // ตรวจสอบเซ็นเซอร์ทุก loop
+  checkSensor();
   
-  // ส่งข้อความ Discord ที่รอคิวอยู่
-  if(pendingDiscordMessage){
-    report();
-    sendMessageToDiscord(statusMsg);
-    pendingDiscordMessage = false;
-    statusMsg = "";
-  }
-  // ส่งอีกครั้งเมื่อ เซ็นเซอร์ กลับมาเป็นปกติ เพื่อปิด 🚨 
-  if(pendingSendDataToApi && !pendingDiscordMessage){ 
-      String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";  
-      sendDataToAPI(payload);
-      pendingSendDataToApi = false;
-  }
-
-  // ตัวอย่าง: โค้ดสำหรับทำอะไรสักอย่างทุก 7 วินาที  
-  if (millis() - lastTime > 7000) {
-    //ส่งแจ้งเตือน 1 ครั้งหลักจาก เซ็นเซอร์กลับมาเป็นปกตื
-    if(!pendingDiscordMessage && sensorAlarm){
-      sensorAlarm = false;
-      pendingDiscordMessage = true;
-      pendingSendDataToApi = true; 
+  // จัดการส่งข้อมูล แต่จำกัดความถี่
+  if(millis() - lastSendTime > MIN_SEND_INTERVAL) {
+    if(pendingDiscordMessage || pendingSendDataToApi) {
+      processAsyncTasks();
+      lastSendTime = millis();
     }
-    if(!digitalRead(SENSOR_PIN)){
-      pendingDiscordMessage = true; 
-      sensorAlarm = true;   
-      pendingSendDataToApi = true;  
-    }   
-    lastTime = millis();
   }
-
+  
+  // ให้ CPU ทำงานอื่นได้
+  yield();
 }
