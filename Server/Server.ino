@@ -1,5 +1,5 @@
-// #include <WiFi.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
+// #include <ESP8266WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 
@@ -95,7 +95,7 @@ void processing(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_
   
   // ส่ง response เป็น JSON
   String response = "{\"status\":\"success\",\"id\":" + String(id) + ",\"alram\":\"" + String(alram) + "\"}";
-  request->send(200, "application/json", response);
+  request->send(200, "application/json", "OK");
 }
 
 void loop() {
