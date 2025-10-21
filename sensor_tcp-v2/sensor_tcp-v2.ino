@@ -11,6 +11,9 @@
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
 #include <TaskScheduler.h>
 
+#define JSON_BUFFER_SIZE 300
+char jsonPayload[JSON_BUFFER_SIZE];
+
 // ===================================
 // #define HTTPC_ERROR_CONNECTION_FAILED   (-1)
 // #define HTTPC_ERROR_SEND_HEADER_FAILED  (-2)
@@ -370,6 +373,43 @@ void save_Config(AsyncWebServerRequest *request){
   file.close();
   request->send(200, "application/json", "{\"success\":\"Configuration saved successfully\"}");
 
+}
+
+bool sendDiscordReport() {
+  snprintf(jsonPayload, JSON_BUFFER_SIZE,
+    "{\"content\":\"🔧 **ESP8266 Status Report**\\n"
+    "**ID:** %s\\n"
+    "**Sensor:** %s\\n"
+    "**WiFi:** %s\\n"
+    "**IP Address:** %s\\n"
+    "**Signal (RSSI):** %d dBm\\n"
+    "**Free Heap:** %d bytes\\n"
+    "**Uptime:** %lu seconds\"}",
+    cfg.id,
+    digitalRead(SENSOR_PIN) ? "🟢 ปกติ" : "🔴 ฉุกเฉิน",
+    WiFi.isConnected() ? "Connected" : "Disconnected",
+    WiFi.localIP().toString().c_str(),
+    WiFi.RSSI(),
+    ESP.getFreeHeap(),
+    millis() / 1000
+  );
+
+  WiFiClientSecure client;
+  client.setInsecure(); // ใช้แบบไม่ตรวจสอบ certificate (ง่าย แต่ไม่ปลอดภัยที่สุด)
+
+  HTTPClient https;
+  https.begin(client, "https://discord.com/api/webhooks/...");
+  https.addHeader("Content-Type", "application/json");
+  int httpCode = https.POST(jsonPayload);
+  https.end();
+
+  if (httpCode > 0 && httpCode == HTTP_CODE_OK) {
+    Serial.println("✅ Discord report sent successfully.");
+    return true;
+  } else {
+    Serial.println("❌ Failed to send Discord report. Code: " + String(httpCode));
+    return false;
+  }
 }
 
 bool sendMessageToDiscord(String msg = ""){
