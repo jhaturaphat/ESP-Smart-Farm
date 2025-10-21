@@ -11,8 +11,14 @@
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
 #include <TaskScheduler.h>
 
+// buffer สำหรับ Discord
 #define JSON_BUFFER_SIZE 300
 char jsonPayload[JSON_BUFFER_SIZE];
+// buffer สำหรับ Local API
+#define BUFFER_SIZE_API 64
+#define BUFFER_COUNT_API 5
+char bufferPool[BUFFER_COUNT_API][BUFFER_SIZE_API];
+int currentIndex = 0;
 
 // ===================================
 // #define HTTPC_ERROR_CONNECTION_FAILED   (-1)
@@ -55,9 +61,10 @@ void connectAP();
 String chipID();
 void save_Config(AsyncWebServerRequest *request);
 bool loadConfig();
+bool sendDiscordReport();
 bool sendMessageToDiscord(String msg);
-bool sendDataToAPI(String payload);
-String report();
+bool sendDataToAPI();
+// String report();
 
 struct Api {
   bool trigger = false;
@@ -101,15 +108,15 @@ void setup() {
   }
   
 }
-void checkSystemHealth() {
-    static unsigned long lastCheck = 0;
-    if(millis() - lastCheck > 30000) { // ทุก 30 วินาที
-        Serial.printf("Free Heap: %d\n", ESP.getFreeHeap());
-        Serial.printf("Heap Fragmentation: %d%%\n", ESP.getHeapFragmentation());
-        Serial.printf("Max Free Block: %d\n", ESP.getMaxFreeBlockSize());
-        lastCheck = millis();
-    }
-}
+// void checkSystemHealth() {
+//     static unsigned long lastCheck = 0;
+//     if(millis() - lastCheck > 30000) { // ทุก 30 วินาที
+//         Serial.printf("Free Heap: %d\n", ESP.getFreeHeap());
+//         Serial.printf("Heap Fragmentation: %d%%\n", ESP.getHeapFragmentation());
+//         Serial.printf("Max Free Block: %d\n", ESP.getMaxFreeBlockSize());
+//         lastCheck = millis();
+//     }
+// }
 
 void serverMode(){
   isServerMode = true;
@@ -123,7 +130,7 @@ void serverMode(){
       request->send(LittleFS, "/index.html", "text/html");
     } else {
       int duration = millis();
-      request->send(200, "text/html", "<center><br>⚠️error⚠️<h1>ESP8266 Config</h1><p>index.html not found in LittleFS "+(String)duration+"</p></center>");
+      request->send(200, F("text/html"), "<center><br>⚠️error⚠️<h1>ESP8266 Config</h1><p>index.html not found in LittleFS "+(String)duration+"</p></center>");
     }
   });
 
@@ -133,7 +140,7 @@ void serverMode(){
 
   // จัดการ request ที่ไม่ตรงกับ route ใดๆ
   server.onNotFound([](AsyncWebServerRequest *request){    
-    request->send(404, "text/plain", "Not Found "+request->url());
+    request->send(404, F("text/plain"), "Not Found "+request->url());
   });
   // เริ่ม server
   server.begin();
@@ -194,114 +201,104 @@ void connectAP(){
       Serial.println(WiFi.localIP());
     }
 
-  server.on("/", HTTP_GET,[](AsyncWebServerRequest *request){
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<meta charset='UTF-8'>";
-  html += "<style>";
-  html += "body{font-family:Arial;margin:20px;background:#f0f0f0}";
-  html += ".container{max-width:600px;margin:0 auto;background:white;padding:20px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}";
-  html += "h1{color:#333;text-align:center;margin-bottom:30px}";
-  html += ".status-item{padding:10px;margin:10px 0;background:#f9f9f9;border-left:4px solid #4CAF50;border-radius:4px}";
-  html += ".label{font-weight:bold;color:#555}";
-  html += ".value{color:#333;float:right}";
-  html += ".btn{display:block;width:100%;padding:15px;margin:20px 0;font-size:16px;font-weight:bold;";
-  html += "color:white;background:#4CAF50;border:none;border-radius:5px;cursor:pointer;transition:0.3s}";
-  html += ".btn:hover{background:#45a049}";
-  html += ".btn:active{transform:scale(0.98)}";
-  html += "#result{margin-top:20px;padding:15px;border-radius:5px;display:none;text-align:center;font-weight:bold}";
-  html += ".success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}";
-  html += ".error{background:#f8d7da;color:#721c24;border:1px solid #f5c6cb}";
-  html += "</style></head><body>";
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+  String html;
+  html += F("<!DOCTYPE html><html><head>");
+  html += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
+  html += F("<meta charset='UTF-8'>");
+  html += F("<style>");
+  html += F("body{font-family:Arial;margin:20px;background:#f0f0f0}");
+  html += F(".container{max-width:600px;margin:0 auto;background:white;padding:20px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}");
+  html += F("h1{color:#333;text-align:center;margin-bottom:30px}");
+  html += F(".status-item{padding:10px;margin:10px 0;background:#f9f9f9;border-left:4px solid #4CAF50;border-radius:4px}");
+  html += F(".label{font-weight:bold;color:#555}");
+  html += F(".value{color:#333;float:right}");
+  html += F(".btn{display:block;width:100%;padding:15px;margin:20px 0;font-size:16px;font-weight:bold;");
+  html += F("color:white;background:#4CAF50;border:none;border-radius:5px;cursor:pointer;transition:0.3s}");
+  html += F(".btn:hover{background:#45a049}");
+  html += F(".btn:active{transform:scale(0.98)}");
+  html += F("#result{margin-top:20px;padding:15px;border-radius:5px;display:none;text-align:center;font-weight:bold}");
+  html += F(".success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}");
+  html += F(".error{background:#f8d7da;color:#721c24;border:1px solid #f5c6cb}");
+  html += F("</style></head><body>");
   
-  html += "<div class='container'>";
-  html += "<h1>🔧 ESP8266 Status</h1>";
+  html += F("<div class='container'>");
+  html += F("<h1>🔧 ESP8266 Status</h1>");
   
-  // WiFi Status
-  html += "<div class='status-item'>";
-  html += "<span class='label'>WiFi:</span>";
-  html += "<span class='value'>" + String(WiFi.isConnected() ? "✅ Connected" : "❌ Disconnected") + "</span>";
-  html += "</div>";
+  html += F("<div class='status-item'><span class='label'>WiFi:</span><span class='value'>");
+  html += WiFi.isConnected() ? F("✅ Connected") : F("❌ Disconnected");
+  html += F("</span></div>");
   
-  // IP Address
-  html += "<div class='status-item'>";
-  html += "<span class='label'>IP Address:</span>";
-  html += "<span class='value'>" + WiFi.localIP().toString() + "</span>";
-  html += "</div>";
+  html += F("<div class='status-item'><span class='label'>IP Address:</span><span class='value'>");
+  html += WiFi.localIP().toString();
+  html += F("</span></div>");
   
-  // Signal Strength
-  html += "<div class='status-item'>";
-  html += "<span class='label'>Signal (RSSI):</span>";
-  html += "<span class='value'>" + String(WiFi.RSSI()) + " dBm</span>";
-  html += "</div>";
+  html += F("<div class='status-item'><span class='label'>Signal (RSSI):</span><span class='value'>");
+  html += String(WiFi.RSSI()) + F(" dBm</span></div>");
   
-  // Free Memory
-  html += "<div class='status-item'>";
-  html += "<span class='label'>Free Heap:</span>";
-  html += "<span class='value'>" + String(ESP.getFreeHeap()) + " bytes</span>";
-  html += "</div>";
-
-  // Free Block
-  html += "<div class='status-item'>";
-  html += "<span class='label'>Free Block:</span>";
-  html += "<span class='value'>" + String(ESP.getMaxFreeBlockSize()) + " bytes</span>";
-  html += "</div>";
-
-  // Heap Fragmentation
-  html += "<div class='status-item'>";
-  html += "<span class='label'>Heap Fragmentation:</span>";
-  html += "<span class='value'>" + String(ESP.getHeapFragmentation()) + " bytes</span>";
-  html += "</div>";
+  html += F("<div class='status-item'><span class='label'>Free Heap:</span><span class='value'>");
+  html += String(ESP.getFreeHeap()) + F(" bytes</span></div>");
   
-  // Uptime
-  html += "<div class='status-item'>";
-  html += "<span class='label'>Uptime:</span>";
-  html += "<span class='value'>" + String(millis()/1000) + " seconds</span>";
-  html += "</div>";
+  html += F("<div class='status-item'><span class='label'>Free Block:</span><span class='value'>");
+  html += String(ESP.getMaxFreeBlockSize()) + F(" bytes</span></div>");
   
-  // Test Button
-  html += "<button class='btn' onclick='sendTest()'>📤 Send Test Message to Discord</button>";
+  html += F("<div class='status-item'><span class='label'>Heap Fragmentation:</span><span class='value'>");
+  html += String(ESP.getHeapFragmentation()) + F(" %</span></div>");
   
-  // Result message area
-  html += "<div id='result'></div>";
+  html += F("<div class='status-item'><span class='label'>Uptime:</span><span class='value'>");
+  html += String(millis()/1000) + F(" seconds</span></div>");
   
-  html += "</div>";
+  html += F("<button class='btn' onclick='sendTest()'>📤 Send Test Message to Discord</button>");
+  html += F("<div id='result'></div>");
+  html += F("</div>");
   
-  // JavaScript
-  html += "<script>";
-  html += "function sendTest(){";
-  html += "  document.getElementById('result').style.display='none';";
-  html += "  fetch('/test')";
-  html += "    .then(response => response.text())";
-  html += "    .then(data => {";
-  html += "      var resultDiv = document.getElementById('result');";
-  html += "      resultDiv.className = 'success';";
-  html += "      resultDiv.textContent = '✅ ' + data;";
-  html += "      resultDiv.style.display = 'block';";
-  html += "      setTimeout(() => location.reload(), 2000);";
-  html += "    })";
-  html += "    .catch(error => {";
-  html += "      var resultDiv = document.getElementById('result');";
-  html += "      resultDiv.className = 'error';";
-  html += "      resultDiv.textContent = '❌ Error: ' + error;";
-  html += "      resultDiv.style.display = 'block';";
-  html += "    });";
-  html += "}";
-  html += "</script>";
+  html += F("<script>");
+  html += F("function sendTest(){");
+  html += F("document.getElementById('result').style.display='none';");
+  html += F("fetch('/test')");
+  html += F(".then(response => response.text())");
+  html += F(".then(data => {");
+  html += F("var resultDiv = document.getElementById('result');");
+  html += F("resultDiv.className = 'success';");
+  html += F("resultDiv.textContent = '✅ ' + data;");
+  html += F("resultDiv.style.display = 'block';");
+  html += F("setTimeout(() => location.reload(), 2000);");
+  html += F("})");
+  html += F(".catch(error => {");
+  html += F("var resultDiv = document.getElementById('result');");
+  html += F("resultDiv.className = 'error';");
+  html += F("resultDiv.textContent = '❌ Error: ' + error;");
+  html += F("resultDiv.style.display = 'block';");
+  html += F("});}");
+  html += F("</script>");
   
-  html += "</body></html>";
+  html += F("</body></html>");
   
-  request->send(200, "text/html", html);
+  request->send(200, F("text/html"), html);
 });
+
+
+// server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
+//   StaticJsonDocument<256> doc;
+//   doc["wifi"] = WiFi.isConnected();
+//   doc["ip"] = WiFi.localIP().toString();
+//   doc["rssi"] = WiFi.RSSI();
+//   doc["heap"] = ESP.getFreeHeap();
+
+//   String response;
+//   serializeJson(doc, response);
+//   request->send(200, "application/json", response);
+// });
+
 
     server.on("/test", HTTP_GET,[](AsyncWebServerRequest *request){
       discord.test = true;
-      request->send(200, "text/plain", "Message queued");    
+      request->send(200, F("text/plain"), "Message queued");    
     });
 
      // จัดการ request ที่ไม่ตรงกับ route ใดๆ
   server.onNotFound([](AsyncWebServerRequest *request){    
-    request->send(404, "text/plain", "Not Found "+request->url());
+    request->send(404, F("text/plain"), "Not Found "+request->url());
   });
   // เริ่ม server
   server.begin();
@@ -309,18 +306,18 @@ void connectAP(){
   }
 }
 
-String report(){
+// String report(){
       
-      String statusMsg = "🔧 **ESP8266 Status Report**\\n";
-      statusMsg += "**ID:** " + cfg.id +"\\n";
-      statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
-      statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "Connected" : "Disconnected") + "\\n";
-      statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
-      statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
-      statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
-      statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
-      return statusMsg;
-}
+//       String statusMsg = "🔧 **ESP8266 Status Report**\\n";
+//       statusMsg += "**ID:** " + cfg.id +"\\n";
+//       statusMsg += "**Sensor:** " + String(digitalRead(SENSOR_PIN) ? "🟢 ปกติ":"🔴 ฉุกเฉิน")+"\\n";
+//       statusMsg += "**WiFi:** " + String(WiFi.isConnected() ? "Connected" : "Disconnected") + "\\n";
+//       statusMsg += "**IP Address:** " + WiFi.localIP().toString() + "\\n";
+//       statusMsg += "**Signal (RSSI):** " + String(WiFi.RSSI()) + " dBm\\n";
+//       statusMsg += "**Free Heap:** " + String(ESP.getFreeHeap()) + " bytes\\n";
+//       statusMsg += "**Uptime:** " + String(millis()/1000) + " seconds\\n";
+//       return statusMsg;
+// }
 
 String chipID(){
     uint32_t chipId = ESP.getChipId();
@@ -354,7 +351,7 @@ void save_Config(AsyncWebServerRequest *request){
 
   File file = LittleFS.open("/config.json","w");
   if(!file){
-    return request->send(400, "application/json", "{\"error\":\"Failed to create new config file\"}");
+    return request->send(400, F("application/json"), F("{\"error\":\"Failed to create new config file\"}"));
   }
 
   // ใช้ ArduinoJson
@@ -368,14 +365,17 @@ void save_Config(AsyncWebServerRequest *request){
   // เขียน JSON ลงไฟล์
   if(serializeJson(doc, file) == 0){
     file.close();
-    return request->send(500, "application/json", "{\"error\":\"Failed to write to file\"}");
+    return request->send(500, F("application/json"), F("{\"error\":\"Failed to write to file\"}"));
   }
   file.close();
-  request->send(200, "application/json", "{\"success\":\"Configuration saved successfully\"}");
+  request->send(200, F("application/json"), F("{\"success\":\"Configuration saved successfully\"}"));
 
 }
 
 bool sendDiscordReport() {
+  if(WiFi.status() != WL_CONNECTED){
+    return false;
+  }  
   snprintf(jsonPayload, JSON_BUFFER_SIZE,
     "{\"content\":\"🔧 **ESP8266 Status Report**\\n"
     "**ID:** %s\\n"
@@ -398,33 +398,34 @@ bool sendDiscordReport() {
   client.setInsecure(); // ใช้แบบไม่ตรวจสอบ certificate (ง่าย แต่ไม่ปลอดภัยที่สุด)
 
   HTTPClient https;
-  https.begin(client, "https://discord.com/api/webhooks/...");
+  https.begin(client, cfg.discord);
   https.addHeader("Content-Type", "application/json");
+  https.addHeader("User-Agent", "ESP-Discord-Bot");
   int httpCode = https.POST(jsonPayload);
-  https.end();
-
-  if (httpCode > 0 && httpCode == HTTP_CODE_OK) {
+  https.end();  
+  
+  if (httpCode > 0) { // ส่งข้อความไปยัง discord สำเร็จ
     Serial.println("✅ Discord report sent successfully.");
     return true;
   } else {
     Serial.println("❌ Failed to send Discord report. Code: " + String(httpCode));
     return false;
   }
+  return false;
 }
 
 bool sendMessageToDiscord(String msg = ""){
   if(WiFi.status() != WL_CONNECTED){
     return false;
-  }  
-  if(msg == "") msg = report();
-    
+  } 
+ 
     WiFiClientSecure *client = new WiFiClientSecure();
     client->setInsecure(); // ไม่ตรวจสอบ SSL certificate 
     HTTPClient http;
 
     if(http.begin(*client, cfg.discord)){
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("User-Agent", "ESP-Discord-Bot");
+      http.addHeader(F("Content-Type"), F("application/json"));
+      http.addHeader(F("User-Agent"), F("ESP-Discord-Bot"));
       http.setTimeout(2000);
       String jsonPayload = "{\"content\": \"" + msg + "\"}";
       ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต
@@ -468,15 +469,18 @@ bool quickServerCheck() {
     return client.connect(hostname.c_str(), 80); // ✅ เช็คแค่ port 80
 }
 
-bool sendDataToAPI(String payload) {  
-
-  Serial.println(payload);
-
+bool sendDataToAPI() {  
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wifi Not connected");
     return false;
   }
-
+   
+  char* playload =  bufferPool[currentIndex];
+  // เคลียร์ buffer ก่อนใช้งาน (ป้องกันข้อมูลค้าง)
+  memset(playload, 0, BUFFER_SIZE_API);
+  // สร้าง payload JSON ลงใน buffer
+  snprintf(playload, BUFFER_SIZE_API,"{\"id\":%d,\"alram\":%d}", cfg.id, digitalRead(SENSOR_PIN));
+  Serial.println(playload);
   HTTPClient http;
   WiFiClient *client = nullptr;
   WiFiClientSecure *secureClient = nullptr;
@@ -498,12 +502,12 @@ bool sendDataToAPI(String payload) {
     return false;
   }
   
-  http.addHeader("Content-Type", "application/json");
+  http.addHeader(F("Content-Type"), F("application/json"));
   // http.setTimeout(2000);
   //http.setTimeout(5000); // เพิ่ม timeout 5 วินาที
   ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต
   yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi 
-  int httpResponseCode = http.POST(payload);
+  int httpResponseCode = http.POST(playload);
   if (httpResponseCode > 0){
     // สามารถส่งไปยังเซิร์พเวอร์ได้นะ
     Serial.print("HTTP Response code: ");
@@ -524,6 +528,8 @@ bool sendDataToAPI(String payload) {
     
     return false;
   }
+  // วนไปใช้ buffer ถัดไป
+  currentIndex = (currentIndex + 1) % BUFFER_COUNT_API;
   
   return false;
 }
@@ -558,8 +564,8 @@ void loop() {
   if (now - lastApiSend > 2000) {
     if(api.trigger){
       if(quickServerCheck()){
-        String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
-        if(sendDataToAPI(payload)){
+        // String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
+        if(sendDataToAPI()){
           api.test = true;
         }       
         ESP.wdtFeed();  // reset timer    
@@ -581,7 +587,7 @@ void loop() {
     Serial.print("Trigger Discord : ");
     Serial.println(discord.trigger);
     if(discord.trigger){
-      if(sendMessageToDiscord()){
+      if(sendDiscordReport()){
         discord.test = true;
       }   
       ESP.wdtFeed();  // reset timer
@@ -598,7 +604,7 @@ void loop() {
 //  ส่งข้อความไปยังยัง Discord 1 ครั้ง
   if(discord.test && SENSOR_STAT){
     if(discord.maxRequest == 0) return;
-    if(sendMessageToDiscord()){
+    if(sendDiscordReport()){
       discord.test = false;
       Serial.println("TEST Discord");
     }     
@@ -609,8 +615,8 @@ void loop() {
   //  ส่งข้อความไปยังยัง Local API 1 ครั้ง
   if(api.test && SENSOR_STAT){
     if(api.maxRequest == 0) return;
-    String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
-    if(sendDataToAPI(payload)){
+    // String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
+    if(sendDataToAPI()){
       api.test = false;
       Serial.println("TEST Local API");
     } 
