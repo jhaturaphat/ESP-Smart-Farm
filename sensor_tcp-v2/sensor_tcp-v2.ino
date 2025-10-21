@@ -10,6 +10,19 @@
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h> // For HTTPS, use WiFiClientSecure
 #include <TaskScheduler.h>
+
+// ===================================
+// #define HTTPC_ERROR_CONNECTION_FAILED   (-1)
+// #define HTTPC_ERROR_SEND_HEADER_FAILED  (-2)
+// #define HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3)
+// #define HTTPC_ERROR_NOT_CONNECTED       (-4)
+// #define HTTPC_ERROR_CONNECTION_LOST     (-5)
+// #define HTTPC_ERROR_NO_STREAM           (-6)
+// #define HTTPC_ERROR_NO_HTTP_SERVER      (-7)
+// #define HTTPC_ERROR_TOO_LESS_RAM        (-8)
+// #define HTTPC_ERROR_ENCODING            (-9)
+// #define HTTPC_ERROR_STREAM_WRITE        (-10)
+// #define HTTPC_ERROR_READ_TIMEOUT        (-11)
 // ===================================
 // Pin Definitions for ESP-01 Board
 // ===================================
@@ -84,6 +97,15 @@ void setup() {
     connectAP(); 
   }
   
+}
+void checkSystemHealth() {
+    static unsigned long lastCheck = 0;
+    if(millis() - lastCheck > 30000) { // ทุก 30 วินาที
+        Serial.printf("Free Heap: %d\n", ESP.getFreeHeap());
+        Serial.printf("Heap Fragmentation: %d%%\n", ESP.getHeapFragmentation());
+        Serial.printf("Max Free Block: %d\n", ESP.getMaxFreeBlockSize());
+        lastCheck = millis();
+    }
 }
 
 void serverMode(){
@@ -214,6 +236,18 @@ void connectAP(){
   html += "<div class='status-item'>";
   html += "<span class='label'>Free Heap:</span>";
   html += "<span class='value'>" + String(ESP.getFreeHeap()) + " bytes</span>";
+  html += "</div>";
+
+  // Free Block
+  html += "<div class='status-item'>";
+  html += "<span class='label'>Free Block:</span>";
+  html += "<span class='value'>" + String(ESP.getMaxFreeBlockSize()) + " bytes</span>";
+  html += "</div>";
+
+  // Heap Fragmentation
+  html += "<div class='status-item'>";
+  html += "<span class='label'>Heap Fragmentation:</span>";
+  html += "<span class='value'>" + String(ESP.getHeapFragmentation()) + " bytes</span>";
   html += "</div>";
   
   // Uptime
@@ -351,9 +385,13 @@ bool sendMessageToDiscord(String msg = ""){
     if(http.begin(*client, cfg.discord)){
       http.addHeader("Content-Type", "application/json");
       http.addHeader("User-Agent", "ESP-Discord-Bot");
+      http.setTimeout(2000);
       String jsonPayload = "{\"content\": \"" + msg + "\"}";
+      ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต
+      yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi 
       // ส่ง POST request
-      int httpResponseCode = http.POST(jsonPayload);    
+      int httpResponseCode = http.POST(jsonPayload);   
+      
       if(httpResponseCode > 0){
         Serial.print("Discord http Code: ");
         Serial.println(httpResponseCode);
@@ -373,6 +411,23 @@ bool sendMessageToDiscord(String msg = ""){
   return false;
 }
 
+
+bool quickServerCheck() {
+    String hostname = cfg.url;
+    
+    // ทำความสะอาด URL อย่างรวดเร็ว
+    if(hostname.startsWith("http://")) hostname = hostname.substring(7);
+    else if(hostname.startsWith("https://")) hostname = hostname.substring(8);
+    
+    int slashPos = hostname.indexOf('/');
+    if(slashPos > 0) hostname = hostname.substring(0, slashPos);
+    
+    WiFiClient client;
+    client.setTimeout(800); // ✅ timeout 0.8 วินาที    
+    yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi
+    return client.connect(hostname.c_str(), 80); // ✅ เช็คแค่ port 80
+}
+
 bool sendDataToAPI(String payload) {  
 
   Serial.println(payload);
@@ -385,6 +440,7 @@ bool sendDataToAPI(String payload) {
   HTTPClient http;
   WiFiClient *client = nullptr;
   WiFiClientSecure *secureClient = nullptr;
+  unsigned long startTime = millis();
   
   if (cfg.url.startsWith("https")) {
     secureClient = new WiFiClientSecure();
@@ -403,7 +459,10 @@ bool sendDataToAPI(String payload) {
   }
   
   http.addHeader("Content-Type", "application/json");
+  // http.setTimeout(2000);
   //http.setTimeout(5000); // เพิ่ม timeout 5 วินาที
+  ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต
+  yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi 
   int httpResponseCode = http.POST(payload);
   if (httpResponseCode > 0){
     // สามารถส่งไปยังเซิร์พเวอร์ได้นะ
@@ -415,19 +474,25 @@ bool sendDataToAPI(String payload) {
     return true;  
   }else{
     // Error on sending POST. Code:
-    Serial.print("Error on sending POST. Code ");
-    Serial.println(httpResponseCode);
+    ESP.wdtFeed(); // ✅ Reset watchdog หลังส่ง
     http.end();  
     if (secureClient) delete secureClient;
     if (client) delete client;
+
+    Serial.print("Error on sending POST. Code ");
+    Serial.println(httpResponseCode);    
+    
     return false;
   }
+  
   return false;
 }
 
 
 void loop() {
+  
   unsigned long now = millis();  
+  ESP.wdtFeed();  // reset timer 
 //-----------------------------------------------------------------------
   if(isServerMode){
     delay(10); // ให้ ESP8266 ทำงานพื้นหลัง
@@ -448,6 +513,47 @@ void loop() {
     lastServerAPI   = now;
   }
 
+//-----------------------------------------------------------------------  
+  // for Local API ทุกๆ 2 วินาที
+  if (now - lastApiSend > 2000) {
+    if(api.trigger){
+      if(quickServerCheck()){
+        String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
+        if(sendDataToAPI(payload)){
+          api.test = true;
+        }       
+        ESP.wdtFeed();  // reset timer    
+      }else{
+        Serial.println("❌ API Server OFFLINE");
+      }
+    }
+    //ส่ง 1 ครั้งเพื่อปิด Siren
+    if(api.test && SENSOR_STAT){ 
+      Serial.println(!api.test && SENSOR_STAT);
+      // api.test = true; 
+      api.maxRequest = 5; 
+    }
+    lastApiSend = now;    
+  }
+//-----------------------------------------------------------------------
+  // for Discord ทุก 5 วินาที  
+  if (now - lastDiscordSend > 5000) {
+    Serial.print("Trigger Discord : ");
+    Serial.println(discord.trigger);
+    if(discord.trigger){
+      if(sendMessageToDiscord()){
+        discord.test = true;
+      }   
+      ESP.wdtFeed();  // reset timer
+    }
+    //ส่ง 1 ครั้ง Discord
+    if(discord.test && SENSOR_STAT){ 
+      //discord.test = true;
+      discord.maxRequest = 5; 
+    }
+    lastDiscordSend = now;
+  }
+
   //-----------------------------------------------------------------------
 //  ส่งข้อความไปยังยัง Discord 1 ครั้ง
   if(discord.test && SENSOR_STAT){
@@ -455,8 +561,9 @@ void loop() {
     if(sendMessageToDiscord()){
       discord.test = false;
       Serial.println("TEST Discord");
-    } 
-    discord.maxRequest --;   
+    }     
+    discord.maxRequest --;  
+    ESP.wdtFeed();  // reset timer 
   }
 //-----------------------------------------------------------------------
   //  ส่งข้อความไปยังยัง Local API 1 ครั้ง
@@ -468,35 +575,7 @@ void loop() {
       Serial.println("TEST Local API");
     } 
     api.maxRequest --;   
+    ESP.wdtFeed();  // reset timer
   }
-//-----------------------------------------------------------------------  
-  // for Local API ทุกๆ 2 วินาที
-  if (now - lastApiSend > 2000) {
-    if(api.trigger){
-      String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
-      sendDataToAPI(payload);      
-    }
-    //ส่ง 1 ครั้งเพื่อปิด Siren
-    if(!api.test && SENSOR_STAT){ 
-      Serial.println(!api.test && SENSOR_STAT);
-      api.test = true; 
-      api.maxRequest = 5; 
-    }
-    lastApiSend = now;    
-  }
-//-----------------------------------------------------------------------
-  // for Discord ทุก 5 วินาที  
-  if (now - lastDiscordSend > 5000) {
-    Serial.print("Trigger Discord : ");
-    Serial.println(discord.trigger);
-    if(discord.trigger){
-      sendMessageToDiscord();      
-    }
-    //ส่ง 1 ครั้ง Discord
-    if(!discord.test && SENSOR_STAT){ 
-      //discord.test = true;
-      discord.maxRequest = 5; 
-    }
-    lastDiscordSend = now;
-  }
+  ESP.wdtFeed();  // reset timer 
 }
