@@ -81,12 +81,13 @@ struct Discord {
 AsyncWebServer server(80);
 
 struct Config {
-  String id;
-  String ssid;
-  String password;
-  String url; 
-  String discord; 
-  String esp_now_mac;
+  char id[3];
+  char ip[16];
+  char ssid[32];
+  char password[32];
+  char url_api[64];
+  String discord_api;
+  char esp_now_mac[18];
 } cfg;
 
 void setup() {
@@ -173,12 +174,18 @@ bool loadConfig() {
 
   // ดึงค่าจาก JSON ลงในสมาชิกของ Struct (Object) ที่ถูกส่งเข้ามา (cfg)
   
-  cfg.id          = doc["id"].as<String>();
-  cfg.ssid        = doc["ssid"].as<String>();
-  cfg.password    = doc["password"].as<String>();
-  cfg.url         = doc["url"].as<String>();  
-  cfg.discord     = doc["discord"].as<String>();  
-  cfg.esp_now_mac = doc["esp_now_mac"].as<String>();
+ // ใช้ strcpy() เพื่อคัดลอก string ไปยัง char array
+  strcpy(cfg.id, doc["id"] | "");
+  strcpy(cfg.ssid, doc["ssid"] | "");
+  strcpy(cfg.password, doc["password"] | "");
+  strcpy(cfg.url_api, doc["url"] | "");
+  cfg.discord_api = doc["discord"] | "";
+  strcpy(cfg.esp_now_mac, doc["esp_now_mac"] | "");
+
+  // แปลง IP เป็น string แล้ว copy ลง char array 
+  String ipStr = WiFi.localIP().toString();
+  strncpy(cfg.ip, ipStr.c_str(), sizeof(cfg.ip));
+  cfg.ip[sizeof(cfg.ip) - 1] = '\0'; // ปิดท้ายด้วย null
 
   return true;
 }
@@ -187,7 +194,7 @@ bool loadConfig() {
 void connectAP(){
   if(cfg.ssid != ""){
     WiFi.mode(WIFI_STA);
-    WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str());
+    WiFi.begin(cfg.ssid, cfg.password);
     WiFi.setAutoReconnect(true);
     while (WiFi.status() != WL_CONNECTED) {
       digitalWrite(LED_BUILTIN, HIGH);
@@ -201,7 +208,7 @@ void connectAP(){
       Serial.println(WiFi.localIP());
     }
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
   String html;
   html += F("<!DOCTYPE html><html><head>");
   html += F("<meta name='viewport' content='width=device-width, initial-scale=1'>");
@@ -223,8 +230,17 @@ void connectAP(){
   html += F("</style></head><body>");
   
   html += F("<div class='container'>");
-  html += F("<h1>🔧 ESP8266 Status</h1>");
+  html += F("<h1>🔧 Sensor Status</h1>");
   
+  html += F("<div class='status-item'><span class='label'>ID:</span><span class='value'>");
+  html += cfg.id;
+  html += F("</span></div>");
+
+  html += F("<div class='status-item'><span class='label'>Sensor:</span><span class='value'>");
+  html += digitalRead(SENSOR_PIN) ? F("🟢 Normal") : F("🚨 Emergency");
+  html += F("</span></div>");
+  
+
   html += F("<div class='status-item'><span class='label'>WiFi:</span><span class='value'>");
   html += WiFi.isConnected() ? F("✅ Connected") : F("❌ Disconnected");
   html += F("</span></div>");
@@ -278,21 +294,24 @@ void connectAP(){
 });
 
 
-// server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
-//   StaticJsonDocument<256> doc;
-//   doc["wifi"] = WiFi.isConnected();
-//   doc["ip"] = WiFi.localIP().toString();
-//   doc["rssi"] = WiFi.RSSI();
-//   doc["heap"] = ESP.getFreeHeap();
+server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request){
+  StaticJsonDocument<256> doc;
+  doc["id"] = cfg.id;
+  doc["alram"] = digitalRead(SENSOR_PIN);
+  // doc["wifi"] = WiFi.isConnected();
+  doc["ip"] = WiFi.localIP().toString();
+  // doc["rssi"] = WiFi.RSSI();
+  // doc["heap"] = ESP.getFreeHeap();
 
-//   String response;
-//   serializeJson(doc, response);
-//   request->send(200, "application/json", response);
-// });
+  String response;
+  serializeJson(doc, response);
+  request->send(200, "application/json", response);
+});
 
 
     server.on("/test", HTTP_GET,[](AsyncWebServerRequest *request){
       discord.test = true;
+      api.test = true;
       request->send(200, F("text/plain"), "Message queued");    
     });
 
@@ -334,18 +353,19 @@ void save_Config(AsyncWebServerRequest *request){
   
   
   // รับค่าจาก request มาเก็บลงตัวแปร
-  String id         = request->getParam("id")->value();
-  String ssid         = request->getParam("ssid")->value();
+  String id           = request->getParam("id")->value();  
+  String ssid         = request->getParam("ssid")->value();  
   String password     = request->getParam("password")->value();
-  String url          = request->getParam("url")->value();
-  String discord      = "";
+  String url_api      = request->getParam("url")->value();
+  String discord_api  = "";
   String esp_now_mac  = "";
   
+    
   if (request->hasParam("discord")){
-    discord = request->getParam("discord")->value();
+    discord_api = request->getParam("discord")->value();    
   }
   if (request->hasParam("esp_now_mac")){
-    esp_now_mac  = request->getParam("esp_now_mac")->value();
+    esp_now_mac  = request->getParam("esp_now_mac")->value();    
   }
   
 
@@ -359,8 +379,8 @@ void save_Config(AsyncWebServerRequest *request){
   doc["id"]           = id;
   doc["ssid"]         = ssid;
   doc["password"]     = password;
-  doc["url"]          = url;  
-  doc["discord"]      = discord;
+  doc["url_api"]      = url_api;  
+  doc["discord_api"]  = discord_api;
   doc["esp_now_mac"]  = esp_now_mac;
   // เขียน JSON ลงไฟล์
   if(serializeJson(doc, file) == 0){
@@ -398,7 +418,7 @@ bool sendDiscordReport() {
   client.setInsecure(); // ใช้แบบไม่ตรวจสอบ certificate (ง่าย แต่ไม่ปลอดภัยที่สุด)
 
   HTTPClient https;
-  https.begin(client, cfg.discord);
+  https.begin(client, cfg.discord_api);
   https.addHeader("Content-Type", "application/json");
   https.addHeader("User-Agent", "ESP-Discord-Bot");
   int httpCode = https.POST(jsonPayload);
@@ -423,7 +443,7 @@ bool sendMessageToDiscord(String msg = ""){
     client->setInsecure(); // ไม่ตรวจสอบ SSL certificate 
     HTTPClient http;
 
-    if(http.begin(*client, cfg.discord)){
+    if(http.begin(*client, cfg.discord_api)){
       http.addHeader(F("Content-Type"), F("application/json"));
       http.addHeader(F("User-Agent"), F("ESP-Discord-Bot"));
       http.setTimeout(2000);
@@ -454,7 +474,8 @@ bool sendMessageToDiscord(String msg = ""){
 
 
 bool quickServerCheck() {
-    String hostname = cfg.url;
+ 
+    String hostname = cfg.url_api;
     
     // ทำความสะอาด URL อย่างรวดเร็ว
     if(hostname.startsWith("http://")) hostname = hostname.substring(7);
@@ -474,55 +495,47 @@ bool sendDataToAPI() {
     Serial.println("Wifi Not connected");
     return false;
   }
-   
+  IPAddress localIp = WiFi.localIP();
   char* playload =  bufferPool[currentIndex];
   // เคลียร์ buffer ก่อนใช้งาน (ป้องกันข้อมูลค้าง)
   memset(playload, 0, BUFFER_SIZE_API);
   // สร้าง payload JSON ลงใน buffer
-  snprintf(playload, BUFFER_SIZE_API,"{\"id\":%d,\"alram\":%d}", cfg.id, digitalRead(SENSOR_PIN));
+  snprintf(playload, BUFFER_SIZE_API, "{\"id\":%d,\"alram\":%d,\"ip\":\"%d.%d.%d.%d\"}", 
+           cfg.id, 
+           digitalRead(SENSOR_PIN), 
+           localIp[0], 
+           localIp[1], 
+           localIp[2], 
+           localIp[3]);
   Serial.println(playload);
   HTTPClient http;
-  WiFiClient *client = nullptr;
-  WiFiClientSecure *secureClient = nullptr;
+  WiFiClient client;  
   unsigned long startTime = millis();
   
-  if (cfg.url.startsWith("https")) {
-    secureClient = new WiFiClientSecure();
-    secureClient->setInsecure();
-    http.begin(*secureClient, cfg.url);
-  } else if(cfg.url.startsWith("http")) {
-    client = new WiFiClient();
-    http.begin(*client, cfg.url);
+  if(strncmp(cfg.url_api, "http",4) == 0) {    
+    http.begin(client, cfg.url_api);
   }else{
-    http.end();
-    // ลบ client หลังจาก http.end()
-    if (secureClient) delete secureClient;
-    if (client) delete client;
-    sendMessageToDiscord("⚠️ Error URL ไม่ถูกต้อง ❌️ "+cfg.url);
+    http.end();  
+    yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi  
+    sendMessageToDiscord("⚠️ Error URL ไม่ถูกต้อง ❌️ "+String(cfg.url_api));
     return false;
   }
   
-  http.addHeader(F("Content-Type"), F("application/json"));
-  // http.setTimeout(2000);
-  //http.setTimeout(5000); // เพิ่ม timeout 5 วินาที
-  ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต
-  yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi 
+  http.addHeader(F("Content-Type"), F("application/json"));  
+  ESP.wdtFeed(); // เพื่อป้องกันรีเซ็ต   
   int httpResponseCode = http.POST(playload);
   if (httpResponseCode > 0){
     // สามารถส่งไปยังเซิร์พเวอร์ได้นะ
     Serial.print("HTTP Response code: ");
     Serial.println(httpResponseCode);
-    http.end();  
-    if (secureClient) delete secureClient;
-    if (client) delete client;
+    http.end(); 
     return true;  
   }else{
     // Error on sending POST. Code:
     ESP.wdtFeed(); // ✅ Reset watchdog หลังส่ง
+    yield(); // ให้ระบบพื้นฐานทำงาน เช่น WiFi
     http.end();  
-    if (secureClient) delete secureClient;
-    if (client) delete client;
-
+    
     Serial.print("Error on sending POST. Code ");
     Serial.println(httpResponseCode);    
     
@@ -563,8 +576,7 @@ void loop() {
   // for Local API ทุกๆ 2 วินาที
   if (now - lastApiSend > 2000) {
     if(api.trigger){
-      if(quickServerCheck()){
-        // String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
+      if(quickServerCheck()){        
         if(sendDataToAPI()){
           api.test = true;
         }       
@@ -593,8 +605,7 @@ void loop() {
       ESP.wdtFeed();  // reset timer
     }
     //ส่ง 1 ครั้ง Discord
-    if(discord.test && SENSOR_STAT){ 
-      //discord.test = true;
+    if(discord.test && SENSOR_STAT){       
       discord.maxRequest = 5; 
     }
     lastDiscordSend = now;
@@ -614,8 +625,7 @@ void loop() {
 //-----------------------------------------------------------------------
   //  ส่งข้อความไปยังยัง Local API 1 ครั้ง
   if(api.test && SENSOR_STAT){
-    if(api.maxRequest == 0) return;
-    // String payload = "{\"id\":\""+cfg.id+"\",\"alram\":"+digitalRead(SENSOR_PIN)+"}";
+    if(api.maxRequest == 0) return;    
     if(sendDataToAPI()){
       api.test = false;
       Serial.println("TEST Local API");
